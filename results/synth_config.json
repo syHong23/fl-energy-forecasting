@@ -1,0 +1,18 @@
+{
+  "data": "LD2011_2014.txt",
+  "synthetic": false,
+  "clients": 20,
+  "epochs": 60,
+  "batch": 256,
+  "lr": 0.001,
+  "beta": 0.5,
+  "clip": 1.0,
+  "noise": 0.3,
+  "epsilons": "1,4,8",
+  "attack_size": 2000,
+  "test_frac": 0.2,
+  "seed": 1,
+  "seeds": "0,1",
+  "out": "results",
+  "source": "UCI ElectricityLoadDiagrams20112014"
+}

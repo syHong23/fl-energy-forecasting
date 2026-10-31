@@ -19,7 +19,7 @@ The study asks four questions:
 | Clients | 20 consumers sampled at random from those active over the whole period; 50% are "new members" whose training inputs and targets all fall within their last 30 days (23 training days each) |
 | Task | At midnight, forecast the 24 hourly loads of the next day as three quantiles (10%, 50%, 90%), from the past 7 days of hourly readings and calendar features of the target day |
 | Split | Chronological: last 20% of days for testing (146 days) |
-| Model | MLP (172 → 64 → 64 → 72), trained with the pinball (quantile) loss; kept small on purpose, since DP-SGD adds noise to every parameter's gradient |
+| Model | Residual over the weekly naive forecast: last week's profile plus a correction for each hour and quantile, predicted by an MLP (172 → 64 → 64 → 72) trained with the pinball (quantile) loss. The last layer starts at zero, so an untrained model equals the naive forecast. The model is kept small on purpose, since DP-SGD adds noise to every parameter's gradient |
 | Seeds | 2 training seeds (initialisation, shuffling, DP noise, missing-data mask); same 20 clients; mean and min–max reported |
 
 | Setting | What is shared | Notes |
@@ -51,10 +51,80 @@ It takes about 10–20 minutes on a laptop CPU. Outputs go to `results/`: `resul
 
 ## Results
 
-<!-- RESULTS: filled from the UCI run -->
+UCI data, 20 clients, mean of 2 seeds. NMAE and pinball loss in % of mean load (lower is better); coverage of the 10–90% interval (target 80%); battery savings captured in % of the perfect-forecast savings.
+
+| Setting | NMAE new | Pinball new | Coverage new | NMAE full-history | Battery savings, new |
+|---|---|---|---|---|---|
+| Naive (yesterday) | 12.49 | 6.24 | – | 9.43 | 89.6 |
+| Naive (last week) | 11.58 | 5.79 | – | 10.09 | 91.1 |
+| Local only | 12.66 | 4.55 | 66.1 | 8.59 | 90.3 |
+| Centralized (no privacy) | 9.70 | 3.40 | 72.1 | 8.05 | 92.3 |
+| FedAvg + pers. | 11.30 | 4.24 | 67.9 | 8.82 | 91.5 |
+| FedAvg + DP ε=1 + pers. | 16.29 | 5.43 | 75.0 | 11.55 | 87.7 |
+| **FedAvg + DP ε=4 + pers.** | **11.99** | **4.34** | **72.6** | **9.37** | **90.7** |
+| FedAvg + DP ε=8 + pers. | 11.75 | 4.30 | 72.2 | 9.19 | 91.0 |
+
+![accuracy](results/results.png)
+![decision value](results/battery.png)
+![example](results/forecast_example.png)
+
+**Findings**
+
+- **Probabilistic forecasts are where federation pays off.** For new members with 23 training days, FedAvg cuts the pinball loss by 27% against the best naive reference (5.79% → 4.24%), and by 25% under ε=4 differential privacy (4.34%). Naive forecasts carry no uncertainty at all.
+- **Point accuracy stays at the naive level.** The median forecast of the federated models matches last week's profile (11.3–12.0% vs 11.6% NMAE). With so little history, beating a strong seasonal reference on point accuracy is hard; the centralized upper bound (9.7%) shows that it is possible in principle.
+- **Privacy cost is small at ε ≥ 4 and large at ε = 1.** With about 600 daily records per client, ε=1 raises the pinball loss of new members from 4.24% to 5.43%.
+- **Intervals are slightly too narrow.** Coverage of the 10–90% interval is 68–75% instead of 80%, a gap that post-hoc calibration (e.g. conformal) could close.
+- **Median-based scheduling hides forecast quality.** All settings except ε=1 capture about 90–92% of the perfect-forecast battery savings. A schedule built on the median alone cannot use the better uncertainty estimates, which motivates risk-aware scheduling on the quantiles.
+- **Missing data.** With 20% of input readings missing, every setting degrades to about 16% NMAE, the level of the naive references.
+
+## Privacy audit: membership inference
+
+A formal ε says how much a model *may* leak; an attack measures how much it *does*. `mia.py` audits the forecasters empirically.
+
+- **Setup.** Each client's training days are split at random into members (used for training) and held-out non-members from the same period. Every setting is retrained on the members only.
+- **Attack.** A loss-threshold membership inference attack: a day is guessed to be a member when the model's pinball loss on it is low. Success is the AUC of telling members from non-members (0.5 = chance, 1.0 = perfect), averaged over clients.
+- **Threat models.** The attacker sees the client's own model (local training), the shared global model (FedAvg), or, for FedAvg, each client's last local update, as an honest-but-curious server would.
+- **Settings.** Local only, local + DP-SGD (ε = 1, 4, 8), centralized, FedAvg, FedAvg + DP-SGD (ε = 1, 4, 8).
+
+```bash
+python mia.py        # about 15 minutes; writes results/mia.csv and results/mia.png
+```
+
+<!-- MIA RESULTS: filled from the UCI run -->
+
+## Releasing synthetic data: DP generative model and attack
+
+Instead of sharing a model, a data holder may release synthetic data. `synth.py` tests this route.
+
+- **Generator.** A variational autoencoder (Gaussian decoder with learned noise scale) learns pairs of consecutive days (previous day and next day, 48 hourly values), trained without DP and with DP-SGD (ε = 1, 4, 8).
+- **Attack on the released data.** Distance-to-closest-record membership inference: real training days (members) and held-out days from the same period (non-members) are compared by their distance to the nearest synthetic record. AUC 0.5 = no leakage.
+- **Utility.** Train on synthetic, test on real (TSTR): a ridge regression predicting the next day from the previous day, fitted on synthetic pairs and evaluated on real test pairs; plus hour-by-hour fidelity (mean 1-D Wasserstein distance).
+- **Baseline.** Releasing the real records with Gaussian noise, a common naive anonymisation.
+
+```bash
+python synth.py      # about 5 minutes; writes results/synth.csv and results/synth.png
+```
+
+UCI data, 20 clients, mean of 2 seeds (TSTR MAE in normalised units; reference trained on the real member pairs: 0.260):
+
+| Released data | Attack AUC | TSTR MAE | Utility loss vs real |
+|---|---|---|---|
+| Real data + Gaussian noise | **0.677** | 0.269 | +3% |
+| VAE (no DP) | 0.503 | 0.269 | +3% |
+| VAE + DP ε=8 | 0.494 | 0.284 | +9% |
+| VAE + DP ε=4 | 0.496 | 0.295 | +13% |
+| VAE + DP ε=1 | 0.495 | 0.351 | +35% |
+
+![synthetic data release](results/synth.png)
+
+- **Naive anonymisation leaks.** Releasing noisy real records lets the attack identify training days (AUC 0.68).
+- **Generated data resists this attack, with or without DP.** The VAE keeps utility close to real data and the distance attack sees no leakage.
+- **DP has a measurable utility cost.** From ε=8 to ε=1, the TSTR error grows from +9% to +35% over real data, while the measured leakage was already at chance level. The formal guarantee and the empirical risk diverge, which is the case for calibrating privacy adaptively with stronger attacks.
+- **Strong persistence.** On this dataset, "next day = previous day" (MAE 0.252) is a very strong reference that the linear model does not beat, so utility is compared with the model trained on real data.
 
 ## Limitations
 
+- **Attacks.** Both audits use simple attacks (loss threshold, distance to closest record). Stronger attacks such as likelihood-ratio attacks with shadow models may reveal more leakage, so the measured AUCs are lower bounds on risk.
 - **Privacy unit.** DP protects one training day. Consecutive examples share input days, so the guarantee for a single hourly reading is weaker (group privacy). Client-level DP and secure aggregation are not implemented.
 - **Scale.** Two seeds, 20 clients, light hyperparameter tuning on synthetic data only, no weather covariates.
 - **Missing data.** Missing inputs are imputed with the client mean; the models are not trained to handle them.
