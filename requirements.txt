@@ -1,0 +1,6 @@
+torch>=2.2
+opacus>=1.5
+numpy
+pandas
+matplotlib
+scipy

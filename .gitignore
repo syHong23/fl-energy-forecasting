@@ -1,0 +1,6 @@
+LD2011_2014.txt
+*.zip
+__pycache__/
+.venv/
+results_synthetic/
+electricityloaddiagrams20112014/
