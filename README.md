@@ -87,10 +87,32 @@ A formal ε says how much a model *may* leak; an attack measures how much it *do
 - **Settings.** Local only, local + DP-SGD (ε = 1, 4, 8), centralized, FedAvg, FedAvg + DP-SGD (ε = 1, 4, 8).
 
 ```bash
-python mia.py        # about 15 minutes; writes results/mia.csv and results/mia.png
+python mia.py                                       # 2 seeds, about 15 minutes
+python mia.py --seeds 0,1,2,3,4 --out results_5seeds   # the table below
+python mia.py --seeds 0,1,2,3,4 --fl-lr 0.1 --out results_lr01   # step-size check for plain FedAvg
 ```
 
-<!-- MIA RESULTS: filled from the UCI run -->
+**Results (UCI, 20 clients, half of them new with 30 days of history; mean ± standard deviation over 5 seeds).** Members: 288 days per full client, 11 per new client.
+
+| Setting | Attack AUC, full clients | Attack AUC, new clients | Client-update AUC, new | Test pinball, full | Test pinball, new |
+|---|---|---|---|---|---|
+| Local only | 0.562 ± 0.013 | **0.793 ± 0.024** | – | 3.09% | 4.84% |
+| Local + DP, ε = 1 | 0.499 ± 0.013 | 0.541 ± 0.041 | – | 4.79% | 81.5% ± 11.5 |
+| Local + DP, ε = 4 | 0.499 ± 0.013 | 0.597 ± 0.039 | – | 4.82% | 10.3% ± 0.9 |
+| Local + DP, ε = 8 | 0.499 ± 0.013 | 0.575 ± 0.029 | – | 4.82% | 6.18% ± 0.30 |
+| Centralized | 0.514 ± 0.014 | 0.573 ± 0.043 | – | 2.90% | 3.58% |
+| FedAvg | 0.498 ± 0.013 | **0.518 ± 0.043** | 0.525 ± 0.042 | 3.72% | 4.57% ± 0.03 |
+| FedAvg + DP, ε = 1 | 0.497 ± 0.014 | 0.522 ± 0.039 | 0.556 ± 0.030 | 6.73% | 9.34% ± 1.09 |
+| FedAvg + DP, ε = 4 | 0.499 ± 0.013 | 0.526 ± 0.042 | 0.560 ± 0.034 | 4.21% | 4.59% ± 0.02 |
+| FedAvg + DP, ε = 8 | 0.499 ± 0.012 | 0.518 ± 0.042 | 0.566 ± 0.041 | 3.92% | **4.49% ± 0.03** |
+
+![membership inference](results_5seeds/mia.png)
+
+- **Data-poor clients leak most.** A new client's own model reveals which days it was trained on (AUC 0.79 ± 0.02), because 11 training days are easy to memorise. Full clients leak little (0.56).
+- **Federation removes most of the leakage and helps accuracy.** The shared FedAvg model is close to chance for new clients (0.52 ± 0.04) and forecasts them better than their own local model (4.57% vs 4.84% pinball).
+- **DP on its own is not enough for small clients.** Local DP-SGD lowers the attack but destroys the new clients' forecasts (81.5% pinball at ε = 1). Inside FedAvg, DP at ε = 8 keeps accuracy (4.49%), and ε = 4 costs almost nothing (4.59%).
+- **The same ε does not mean the same protection.** For new clients, the updates a curious server sees leak slightly *more* with DP-SGD than without (0.566 vs 0.525 at ε = 8; higher in all 5 seeds). The DP runs use a larger step size (0.1 vs 0.05), so I re-ran plain FedAvg at 0.1 (`--fl-lr 0.1`): its update leakage rises only to 0.534 ± 0.040, and DP-SGD still leaks more in all 5 seeds (by 0.01 to 0.05, mean 0.03). The step size explains little of the gap; what remains differs only in DP-SGD's Poisson sampling and per-sample clipping, which behave differently on a client with 11 days. This does not contradict DP, since ε = 8 barely constrains a membership attack, but it shows that mechanism details change privacy for data-poor clients: the case for adaptive, per-client privacy.
+- **Limits.** A loss-threshold attack is a lower bound: stronger attacks (e.g. shadow models, LiRA) could find more. With 11 member days, Poisson sampling sometimes draws an empty batch for a new client (Opacus warns about it); this is expected and does not affect the results.
 
 ## Releasing synthetic data: DP generative model and attack
 
