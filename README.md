@@ -144,10 +144,51 @@ UCI data, 20 clients, mean of 2 seeds (TSTR MAE in normalised units; reference t
 - **DP has a measurable utility cost.** From ε=8 to ε=1, the TSTR error grows from +9% to +35% over real data, while the measured leakage was already at chance level. The formal guarantee and the empirical risk diverge, which is the case for calibrating privacy adaptively with stronger attacks.
 - **Strong persistence.** On this dataset, "next day = previous day" (MAE 0.252) is a very strong reference that the linear model does not beat, so utility is compared with the model trained on real data.
 
+## Secure aggregation: the server sees only the sum
+
+The audit above shows that the update each client sends can reveal its training days, and that DP-SGD updates from data-poor clients leak *more* than non-private ones. `secagg.py` removes the individual updates from the server's view with **secure aggregation** (a simplified version of Bonawitz et al., CCS 2017), without changing the model.
+
+- **Key agreement.** Each client creates an X25519 key pair; every pair of clients derives a shared secret by Diffie–Hellman.
+- **Masking.** Each round, a client encodes its weighted update (and its weight) in fixed point, integers mod 2^64, and adds a pseudorandom mask for every partner with a higher index and subtracts it for every partner with a lower one (seeds from HKDF on the shared secret and the round number).
+- **Aggregation.** The masks cancel in the sum, so the server learns the FedAvg average and the total number of training days, but no individual update and no individual dataset size.
+- **Dropout.** If clients drop out, the survivors reveal the mask seeds they share with them, and the server removes those masks.
+
+```bash
+python secagg.py --synthetic --seeds 0,1,2,3,4     # about 10 minutes
+python secagg.py --seeds 0,1,2,3,4 --out results_5seeds   # UCI data, the table below (about 15 minutes)
+python secagg.py --hourly electricity.txt --seeds 0,1,2,3,4 --out results_uci_hourly   # hourly mirror, about 10 minutes
+```
+
+**Results (UCI, the same 20 clients as the tables above, half of them new with 30 days of history; mean ± standard deviation over 5 seeds).**
+
+| Setting | Test pinball, full | Test pinball, new | Attack on the true updates, new | Attack on what the server sees, new |
+|---|---|---|---|---|
+| FedAvg | 3.71% | 4.57% | 0.525 ± 0.042 | 0.525 ± 0.042 |
+| FedAvg + SecAgg | 3.71% | 4.57% | 0.525 ± 0.042 | 0.486 ± 0.041 |
+| FedAvg + DP, ε = 8 | 3.92% | 4.49% | **0.566 ± 0.041** | **0.566 ± 0.041** |
+| FedAvg + DP, ε = 8 + SecAgg | 3.92% | 4.49% | 0.566 ± 0.041 | **0.520 ± 0.044** |
+
+![secure aggregation](results_5seeds/secagg.png)
+
+| Check (5 seeds) | Result |
+|---|---|
+| Same model as plain FedAvg | max parameter difference 3e-7 to 1.3e-5 after 30 rounds (fixed-point rounding); identical test pinball, with and without DP-SGD |
+| Dropout of 2 of 20 clients | recovered average equals the survivors' FedAvg (max difference 2e-8) |
+| What the server receives | correlation between a masked vector and the true update between −0.009 and +0.014 |
+| Cost | 19,913 values: 80 kB (float32) → 159 kB (uint64) per client per round, plus a 32-byte public key once; 52–58 ms per round for 20 clients on a laptop CPU |
+
+- **The audit reproduces.** The true-update attack gives the same values as the membership audit above (0.525 FedAvg, 0.566 FedAvg + DP), so the leak from DP-SGD updates of data-poor clients is not an artefact of one run.
+- **Secure aggregation removes the individual updates from the server's view.** The server receives masked vectors uncorrelated with the updates; the attack on them averages 0.50 over the ten SecAgg runs (0.486 and 0.520 per setting, range 0.44–0.56 per seed). This spread is the noise floor of the attack with 11 member days per new client, so single seeds can land above the true-update value (2 of 5 seeds for DP); the information itself is gone.
+- **At no cost in accuracy.** The model is the same as plain FedAvg, with or without DP-SGD, for twice the upload and about 55 ms per round.
+- **What it does not protect.** The shared global model is still visible to every client; protecting it needs DP. Secure aggregation and DP are complementary: with secure aggregation, noise could be added once to the sum (central DP) instead of by every client.
+- **Replication on other clients.** With the hourly version of the same dataset (`electricity.txt` from the LSTNet benchmark, 20 different clients, `results_uci_hourly/`), DP-SGD updates again leak more than plain ones (0.574 vs 0.481, all 5 seeds), and the attack on the server's view is 0.510.
+- **Synthetic data.** `results_synthetic/secagg.csv`: the same checks pass, but there the true updates barely leak (0.51–0.53), so the attack shows no difference.
+- **Limits of this version.** Honest-but-curious server and no collusion between the server and clients; no double masking or secret sharing of keys, so a late update from a client declared dropped could be unmasked; pairwise key agreement is O(n²). The full protocol (Bonawitz et al.) handles these cases.
+
 ## Limitations
 
 - **Attacks.** Both audits use simple attacks (loss threshold, distance to closest record). Stronger attacks such as likelihood-ratio attacks with shadow models may reveal more leakage, so the measured AUCs are lower bounds on risk.
-- **Privacy unit.** DP protects one training day. Consecutive examples share input days, so the guarantee for a single hourly reading is weaker (group privacy). Client-level DP and secure aggregation are not implemented.
+- **Privacy unit.** DP protects one training day. Consecutive examples share input days, so the guarantee for a single hourly reading is weaker (group privacy). Client-level DP is not implemented; secure aggregation is a simplified version (see above).
 - **Scale.** Two seeds, 20 clients, light hyperparameter tuning on synthetic data only, no weather covariates.
 - **Missing data.** Missing inputs are imputed with the client mean; the models are not trained to handle them.
 - **Decision layer.** One tariff and one battery size per client; the schedule uses only the median forecast.
@@ -157,7 +198,8 @@ UCI data, 20 clients, mean of 2 seeds (TSTR MAE in normalised units; reference t
 - Weather covariates and probabilistic calibration (e.g. conformal adjustment of the intervals).
 - Decision-aware scheduling that uses the quantiles (risk-averse or stochastic optimisation), and decision-focused training.
 - Coordination: a shared community battery or flexibility requests, where clients with competing objectives must agree on a schedule (distributed optimisation, game-theoretic mechanisms).
-- Client-level DP, secure aggregation, and robustness to corrupted or adversarial clients.
+- Client-level DP with secure aggregation (central noise added to the securely aggregated sum), the full dropout-robust protocol, and robustness to corrupted or adversarial clients.
+- Private set intersection to align records held by different organisations (e.g. a utility and a data-centre operator) before training.
 
 ## Author
 

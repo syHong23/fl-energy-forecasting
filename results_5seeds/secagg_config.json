@@ -1,0 +1,22 @@
+{
+  "data": "LD2011_2014.txt",
+  "synthetic": false,
+  "hourly": null,
+  "clients": 20,
+  "rounds": 30,
+  "local_epochs": 1,
+  "batch": 32,
+  "dp_batch": 256,
+  "fl_lr": 0.05,
+  "dp_lr": 0.1,
+  "clip": 1.0,
+  "epsilon": 8.0,
+  "test_frac": 0.2,
+  "scarce_frac": 0.5,
+  "scarce_days": 30,
+  "seed": 4,
+  "seeds": "0,1,2,3,4",
+  "out": "results_5seeds",
+  "source": "UCI ElectricityLoadDiagrams20112014",
+  "scale": 16777216
+}

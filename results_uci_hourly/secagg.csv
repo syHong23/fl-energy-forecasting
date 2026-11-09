@@ -1,0 +1,5 @@
+setting,pinball_full_mean,pinball_full_min,pinball_full_max,pinball_new_mean,pinball_new_min,pinball_new_max,upd_auc_full_mean,upd_auc_full_min,upd_auc_full_max,upd_auc_new_mean,upd_auc_new_min,upd_auc_new_max,server_auc_full_mean,server_auc_full_min,server_auc_full_max,server_auc_new_mean,server_auc_new_min,server_auc_new_max
+FedAvg,2.8720,2.8639,2.8779,4.8259,4.7774,4.8891,0.5014,0.4931,0.5124,0.4811,0.4485,0.5242,,,,,,
+FedAvg + SecAgg,2.8720,2.8639,2.8779,4.8259,4.7774,4.8891,0.5014,0.4931,0.5124,0.4811,0.4485,0.5242,0.4981,0.4858,0.5067,0.5139,0.4848,0.5652
+FedAvg + DP e=8,2.9466,2.9402,2.9592,4.6734,4.6262,4.7395,0.5004,0.4929,0.5130,0.5742,0.5583,0.6038,,,,,,
+FedAvg + DP e=8 + SecAgg,2.9466,2.9402,2.9592,4.6734,4.6262,4.7395,0.5004,0.4929,0.5130,0.5742,0.5583,0.6038,0.4980,0.4967,0.4992,0.5105,0.4720,0.5424
