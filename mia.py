@@ -174,7 +174,10 @@ def main():
     ap.add_argument("--seed", type=int, default=0, help="seed for choosing clients")
     ap.add_argument("--seeds", default="0,1")
     ap.add_argument("--out", default="results")
+    ap.add_argument("--plot-only", action="store_true", help="redraw mia.png from <out>/mia.csv")
     args = ap.parse_args()
+    if args.plot_only:
+        return replot(args.out)
 
     if args.synthetic:
         df, source = F.make_synthetic(args.clients, args.seed), "synthetic"
@@ -242,11 +245,11 @@ def main():
         print(f"  {name:<16} | {r.auc_full_mean:10.3f} {r.auc_new_mean:10.3f} | "
               f"{r.upd_auc_full_mean:8.3f} {r.upd_auc_new_mean:9.3f} | "
               f"{r.pinball_full_mean:5.2f}% {r.pinball_new_mean:6.2f}%")
-    plot(summ, out / "mia.png", source)
+    plot(summ, out / "mia.png", source, len(args.seeds.split(",")))
     print(f"\nSaved {out}/mia.csv and {out}/mia.png")
 
 
-def plot(summ, path, source):
+def plot(summ, path, source, n_seeds):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -268,26 +271,57 @@ def plot(summ, path, source):
         ax.axvline(0.5, color="#444", lw=0.8, ls="--")
         ax.text(0.502, 0.02, "chance (no leakage)", transform=ax.get_xaxis_transform(),
                 fontsize=7.5, color="#444", va="bottom")
+        pts = []
         for r in summ.itertuples():
             x, y = getattr(r, f"auc_{g}_mean"), getattr(r, f"pinball_{g}_mean")
             xe = [[x - getattr(r, f"auc_{g}_min")], [getattr(r, f"auc_{g}_max") - x]]
-            lab = label(r)
-            if y > cap:  # model unusable: draw at the top edge
-                ax.errorbar(x, cap, xerr=xe, fmt="^", ms=8, color=colors[r.setting], ecolor="#888", lw=0.8, capsize=2)
-                ax.annotate(f"{lab} (off scale: {y:,.0f}%)", (x, cap), textcoords="offset points",
-                            xytext=(6, -10), fontsize=7.5)
+            off = y > cap  # model unusable: draw at the top edge
+            ax.errorbar(x, cap if off else y, xerr=xe, fmt="^" if off else "o", ms=8 if off else 7,
+                        color=colors[r.setting], ecolor="#888", lw=0.8, capsize=2)
+            pts.append([x, cap if off else y, label(r) + (f" (off scale: {y:,.0f}%)" if off else "")])
+        # one label for points that coincide (e.g. Local+DP at every ε on full clients)
+        merged = []
+        for x, y, lab in pts:
+            for m in merged:
+                if abs(m[0] - x) < 0.002 and abs(m[1] - y) < 0.02 * cap:
+                    m[2].append(lab)
+                    break
             else:
-                ax.errorbar(x, y, xerr=xe, fmt="o", ms=7, color=colors[r.setting], ecolor="#888", lw=0.8, capsize=2)
-                ax.annotate(lab, (x, y), textcoords="offset points", xytext=(6, 4), fontsize=7.5)
+                merged.append([x, y, [lab]])
+        # stack labels of nearby points so they do not overlap
+        fig.canvas.draw()
+        to_px = ax.transData.transform
+        placed = []
+        for x, y, labs in sorted(merged, key=lambda m: -m[1]):
+            if len(labs) > 1 and all(l.split(" ε=")[0] == labs[0].split(" ε=")[0] for l in labs):
+                text = labs[0].split(" ε=")[0] + " ε=" + ", ".join(l.split(" ε=")[1] for l in labs)
+            else:
+                text = " / ".join(labs)
+            px, py = to_px((x, y))
+            dy = 4
+            while any(abs(px - qx) < 90 and abs((py + dy * 1.6) - qy) < 11 for qx, qy in placed):
+                dy -= 7
+            placed.append((px, py + dy * 1.6))
+            ax.annotate(text, (x, y), textcoords="offset points", xytext=(6, dy), fontsize=7.5,
+                        arrowprops=dict(arrowstyle="-", color="#bbb", lw=0.5) if dy != 4 else None)
         ax.set_xlabel("Membership inference attack AUC (lower = more private)", fontsize=9)
         ax.set_ylabel("Test pinball loss, % of mean load (lower = more useful)", fontsize=9)
         ax.set_title(title, fontsize=10.5)
         ax.spines[["top", "right"]].set_visible(False)
-    fig.suptitle(f"Privacy-utility audit of day-ahead load forecasters ({source}); mean of 2 seeds",
-                 fontsize=10.5)
+    fig.suptitle(f"Privacy-utility audit of day-ahead load forecasters ({source}); "
+                 f"mean and min–max over {n_seeds} seed{'s' if n_seeds != 1 else ''}", fontsize=10.5)
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
+
+
+def replot(out):
+    """Redraw mia.png from a saved mia.csv, without retraining."""
+    out = Path(out)
+    summ = pd.read_csv(out / "mia.csv")
+    cfg = json.loads((out / "mia_config.json").read_text())
+    plot(summ, out / "mia.png", cfg["source"], len(str(cfg["seeds"]).split(",")))
+    print(f"Redrew {out}/mia.png")
 
 
 if __name__ == "__main__":
