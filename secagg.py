@@ -11,7 +11,7 @@ Protocol (honest-but-curious server, clients do not collude with it):
      Each pair of clients (i, j) derives a shared secret by Diffie-Hellman.
   2. Each round, client i encodes its weighted update  n_i * theta_i  in fixed point
      (integers mod 2^64) and appends its weight n_i. It then adds a pseudorandom mask
-     PRG(s_ij, round) for every j > i and subtracts it for every j < i.
+     ChaCha20(HKDF(s_ij, round)) for every j > i and subtracts it for every j < i.
   3. The server adds the masked vectors. Every mask appears once with + and once
      with -, so they cancel: the server learns sum_i n_i * theta_i and sum_i n_i,
      hence the FedAvg average, but no individual update and no individual weight.
@@ -46,6 +46,7 @@ import pandas as pd
 import torch
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 import fl_energy as F
@@ -113,8 +114,7 @@ class Client:
     def mask_seed(self, j, rnd):
         lo, hi = sorted((self.cid, j))
         info = f"secagg|round={rnd}|pair={lo},{hi}".encode()
-        key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=info).derive(self.secrets[j])
-        return int.from_bytes(key, "big")
+        return HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=info).derive(self.secrets[j])
 
     def masked_input(self, vec, rnd):
         y = encode(vec)
@@ -128,9 +128,11 @@ class Client:
         return {j: self.mask_seed(j, rnd) for j in dropped}
 
 
-def prg(seed, n):
-    return np.random.Generator(np.random.PCG64(seed)).integers(0, 2 ** 64, size=n, dtype=np.uint64,
-                                                              endpoint=False)
+def prg(key, n):
+    """Cryptographic PRG: the ChaCha20 keystream under a 32-byte key, read as n uint64 values.
+    Each key is used once (fresh per pair and round from HKDF), so a fixed nonce is safe."""
+    enc = Cipher(algorithms.ChaCha20(key, bytes(16)), mode=None).encryptor()
+    return np.frombuffer(enc.update(bytes(8 * n)), dtype=np.uint64).copy()
 
 
 def server_sum(masked, survivors, dropped, clients, rnd):
@@ -230,7 +232,10 @@ def main():
     ap.add_argument("--seed", type=int, default=0, help="seed for choosing clients")
     ap.add_argument("--seeds", default="0,1")
     ap.add_argument("--out", default="results")
+    ap.add_argument("--plot-only", action="store_true", help="redraw secagg.png from <out>/secagg.csv")
     args = ap.parse_args()
+    if args.plot_only:
+        return replot(args.out)
 
     if args.synthetic:
         df, source = F.make_synthetic(args.clients, args.seed), "synthetic"
@@ -340,8 +345,9 @@ def plot(summ, path, source, n_seeds):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
 
-    fig, ax = plt.subplots(figsize=(8.5, 4.2))
+    fig, ax = plt.subplots(figsize=(8.5, 4.4))
     labels, x = [], np.arange(len(summ))
     for i, r in enumerate(summ.itertuples()):
         sec = "SecAgg" in r.setting
@@ -350,18 +356,33 @@ def plot(summ, path, source, n_seeds):
         hi = (r.server_auc_new_max if sec else r.upd_auc_new_max)
         ax.bar(i, v - 0.5, bottom=0.5, color="#2a6f97" if sec else "#e07a5f", width=0.6)
         ax.errorbar(i, v, yerr=[[v - lo], [hi - v]], color="#444", capsize=3, lw=0.8)
-        ax.text(i, v + 0.004, f"{v:.3f}", ha="center", va="bottom", fontsize=8.5)
-        labels.append(r.setting.replace(" + SecAgg", "\n+ SecAgg"))
+        above = v >= 0.5
+        ax.text(i + 0.33, v, f"{v:.3f}", ha="left", va="bottom" if above else "top", fontsize=8.5)
+        labels.append(r.setting.replace(" e=", " ε = ").replace(" + SecAgg", "\n+ SecAgg"))
     ax.axhline(0.5, color="#444", lw=0.8, ls="--")
     ax.set_xticks(x, labels, fontsize=8.5)
     ax.set_ylabel("Membership attack AUC on what\nthe server sees (new clients)", fontsize=9)
-    ax.set_ylim(0.45, max(0.62, float(summ["upd_auc_new_max"].max()) + 0.02))
+    lo_all = min(float(summ["upd_auc_new_min"].min()), float(summ["server_auc_new_min"].min()))
+    ax.set_ylim(min(0.45, lo_all - 0.02), max(0.62, float(summ["upd_auc_new_max"].max()) + 0.02))
+    ax.legend(handles=[Patch(color="#e07a5f", label="server sees each client's update"),
+                       Patch(color="#2a6f97", label="server sees masked updates (secure aggregation)")],
+              fontsize=8, frameon=False, loc="upper left")
     ax.spines[["top", "right"]].set_visible(False)
     ax.set_title(f"Server-side membership inference, with and without secure aggregation\n"
-                 f"({source}; mean of {n_seeds} seeds; 0.5 = chance)", fontsize=10)
+                 f"({source}; mean and min–max over {n_seeds} seed{'s' if n_seeds != 1 else ''}; 0.5 = chance)",
+                 fontsize=10)
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
+
+
+def replot(out):
+    """Redraw secagg.png from a saved secagg.csv, without retraining."""
+    out = Path(out)
+    summ = pd.read_csv(out / "secagg.csv")
+    cfg = json.loads((out / "secagg_config.json").read_text())
+    plot(summ, out / "secagg.png", cfg["source"], len(str(cfg["seeds"]).split(",")))
+    print(f"Redrew {out}/secagg.png")
 
 
 if __name__ == "__main__":

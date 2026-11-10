@@ -17,6 +17,7 @@
   "seed": 4,
   "seeds": "0,1,2,3,4",
   "out": "results_5seeds",
+  "plot_only": false,
   "source": "UCI ElectricityLoadDiagrams20112014",
   "scale": 16777216
 }
